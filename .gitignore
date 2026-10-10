@@ -1,0 +1,37 @@
+# Python environments
+.venv/
+venv/
+env/
+
+# Python caches and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Streamlit local settings / secrets
+.streamlit/secrets.toml
+
+# Local environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Logs and temporary files
+*.log
+models/api_serving/.catalog.tmp.json
+models/api_serving/.*.tmp.joblib
+
+# Generated serving artifacts: retrain after cloning to regenerate these.
+# Remove/comment these rules if you intentionally commit trained pipelines;
+# pin the compatible package versions in that case.
+models/api_serving/catalog.json
+models/api_serving/*.joblib
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
