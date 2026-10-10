@@ -14,8 +14,6 @@ An interactive binary-classification project for predicting machine failure from
 - [Run the application on Windows](#run-the-application-on-windows)
 - [Train models and publish them to the API](#train-models-and-publish-them-to-the-api)
 - [FastAPI endpoints](#fastapi-endpoints)
-- [Troubleshooting](#troubleshooting)
-- [Kaggle notebook and report](#kaggle-notebook-and-report)
 - [Limitations and responsible use](#limitations-and-responsible-use)
 
 ## Problem and dataset
@@ -43,7 +41,7 @@ The six approved model predictors are:
 
 The identifier columns `UDI` and `Product ID` are not used as predictors. The failure-mode indicators `TWF`, `HDF`, `PWF`, `OSF`, and `RNF` are excluded from the AI4I model features because they reveal information closely tied to the target and would cause target leakage. Column names returned by the UCI Python client are normalized to the canonical names above.
 
-The training tab fixes the target and positive class for this project. When an AI4I-compatible dataset is detected, it also fixes the six approved features. For a different uploaded CSV, feature selection remains available, but the target must still be a binary `Machine failure` column with classes 0 and 1 to fit this project configuration.
+The training tab fixes the target and positive class for this project. When an AI4I-compatible dataset is detected, it also fixes the six approved features.
 
 ## Implemented functionality
 
@@ -79,28 +77,18 @@ predictive-maintenance/
 ├── api/
 │   ├── __init__.py
 │   └── main.py                    # FastAPI service
+├── dataset/  
+│   └──  ai4i2020.csv 
 ├── models/
 │   └── api_serving/
 │       ├── .gitkeep               # Keeps empty registry directory in Git
 │       ├── catalog.json           # Generated after successful AI4I training
 │       └── *.joblib               # Generated fitted pipelines
 └── notebooks/
-    └── ai4i_predictive_maintenance.ipynb  # Add the notebook downloaded from Kaggle
+    └── ai4i_predictive_maintenance.ipynb  
 ```
 
 `catalog.json` and the `.joblib` files under `models/api_serving/` are generated artifacts. With the recommended `.gitignore`, they are not committed by default; after cloning the repository, run an AI4I training session in Streamlit to regenerate the local registry. If you choose to commit trained artifacts instead, first pin the compatible dependency versions and ensure the files meet GitHub's file-size limits.
-
-## Screenshots
-
-For the final submission, add screenshots captured from your running application. Save them in `docs/screenshots/` and reference them here. Suggested captures are the Data & EDA dashboard, model-training results, the evaluation comparison/confusion matrix, and the Machine Prediction (FastAPI) page. Screenshots are not included in this repository template because the application must be run in your environment to capture authentic results.
-
-Example Markdown once the image files have been added:
-
-```markdown
-![Data and EDA dashboard](docs/screenshots/data_eda.png)
-![Model evaluation](docs/screenshots/model_evaluation.png)
-![Machine prediction through FastAPI](docs/screenshots/machine_prediction.png)
-```
 
 ## Requirements
 
@@ -113,54 +101,36 @@ The current `requirements.txt` includes Streamlit, Pandas, NumPy, Plotly, scikit
 
 ## Run the application on Windows
 
-Run the commands below from the **project root**, the directory containing `app.py`, `requirements.txt`, and `api/`. If the folder path contains spaces, keep it inside quotation marks.
+### 1. Clone the repository
 
-### 1. Open PowerShell in the project root
-
-For example, if your actual project root is:
+Open PowerShell in the directory where you want to store the project, then run:
 
 ```powershell
-cd "C:\Users\<YOUR_USER>\Desktop\predictive maintenance\phase6_streamlit_app\phase6_streamlit_app"
+git clone https://github.com/mohamedborhen/ai4i-predictive-maintenance.git
+cd ai4i-predictive-maintenance
 ```
-
-Use your real folder path. Confirm it is correct:
-
-```powershell
-Get-ChildItem
-```
-
-The output should include `app.py`, `requirements.txt`, `api`, and `models`.
 
 ### 2. Create a virtual environment
-
-If `.venv` does not already exist:
 
 ```powershell
 py -3.12 -m venv .venv
 ```
 
-If Python 3.12 is not installed, use an installed Python version supported by your package versions:
-
-```powershell
-py -m venv .venv
-```
-
 ### 3. Install dependencies
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 ### 4. Start Streamlit
 
-In **Terminal 1**, from the project root:
+In the first PowerShell terminal, run:
 
 ```powershell
 .\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-Open the local URL printed by Streamlit, normally <http://localhost:8501>.
+Open the local URL printed by Streamlit, normally http://localhost:8501.
 
 ### 5. Load data and train models
 
@@ -169,12 +139,12 @@ Open the local URL printed by Streamlit, normally <http://localhost:8501>.
 3. For AI4I, verify that the six approved predictors are used. The failure-mode labels and identifiers must not be model predictors.
 4. Select one or more classifiers. Start with hyperparameter tuning off to verify the workflow, because tuning can require many model fits.
 5. Choose the split ratio, cross-validation folds and imbalance strategy, then click **Train selected models**.
-6. Review the publishing status shown below the results. Successful AI4I training automatically writes the fitted pipelines and `catalog.json` under `models/api_serving/`.
-7. Open **Evaluation** to compare models and inspect metrics, curves, confusion matrix and threshold behaviour.
+6. Successful AI4I training automatically writes the fitted pipelines and `catalog.json` under `models/api_serving/`.
+7. Open **Evaluation** to compare models and inspect metrics, curves, the confusion matrix and threshold behaviour.
 
 ### 6. Start FastAPI in a second terminal
 
-Keep Streamlit running. Open a **second PowerShell terminal in the same project root** and run:
+Keep Streamlit running. Open a second PowerShell terminal in the `ai4i-predictive-maintenance` project directory and run:
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
@@ -197,13 +167,6 @@ The API registry is created only after successful training from Streamlit with a
 - Predictors: exactly the six approved AI4I features listed above.
 - At least one fitted model.
 
-If `GET /models` returns `ready: false`, check the status message shown after training and inspect the local registry:
-
-```powershell
-Get-ChildItem .\models\api_serving -Force
-Test-Path .\models\api_serving\catalog.json
-Get-Content .\models\api_serving\publish_debug.log -Tail 20
-```
 
 Run the commands from the project root. The Streamlit app and Uvicorn process must use the same project directory. A successful HTTP response from `/models` does not guarantee that models exist; an empty registry is reported as `ready: false`.
 
@@ -238,29 +201,6 @@ Example `POST /predict` body (the `model_name` must match a value returned by `G
 }
 ```
 
-## Troubleshooting
-
-### `No AI4I models have been published`
-
-Train at least one model in Streamlit using the AI4I target and exact six-feature schema. Check the publish status and confirm `models/api_serving/catalog.json` exists. Start Uvicorn from the same project root.
-
-### `Could not reach FastAPI`
-
-Confirm that the second terminal is still running Uvicorn at `http://127.0.0.1:8000`. Open <http://127.0.0.1:8000/health> in a browser. If the API runs on a different host/port, set the Streamlit API URL or the `PREDICTIVE_MAINTENANCE_API_URL` environment variable as appropriate.
-
-### Model loading / `joblib` compatibility error
-
-Serialized scikit-learn pipelines can be sensitive to package versions. If you commit model artifacts, preserve the compatible versions used to train them and pin dependencies accordingly. Otherwise, remove stale generated artifacts and retrain in the environment used to run the app.
-
-### UCI download fails
-
-Use the CSV upload option and select the AI4I CSV. The application normalizes the UCI client's alternate measurement names to the canonical feature names.
-
-## Kaggle notebook and report
-
-The exploratory analysis, preparation experiments, cross-validation, hyperparameter search and initial model evaluation were developed in Kaggle Notebook. Download the final `.ipynb` file from Kaggle and place it at `notebooks/ai4i_predictive_maintenance.ipynb` before publishing the repository. If your notebook relies on a Kaggle dataset path, document that path or update the notebook so that another reader can reproduce the data-loading step.
-
-The project deliverables also include a one-page PDF report covering the business problem, dataset, chosen model, evaluation results, key limitations and recommendations. Complete the XAI analysis portion after SHAP/LIME is implemented.
 
 ## Limitations and responsible use
 
