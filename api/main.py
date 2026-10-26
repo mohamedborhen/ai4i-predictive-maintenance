@@ -10,6 +10,8 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from xai import FEATURES as XAI_FEATURES, explanation_payload, validate_features
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_DIR = PROJECT_ROOT / "models" / "api_serving"
 CATALOG_PATH = MODEL_DIR / "catalog.json"
@@ -18,8 +20,8 @@ app = FastAPI(
     title="AI4I Predictive Maintenance API",
     version="1.0.0",
     description=(
-        "Prediction API for the AI4I 2020 binary machine-failure classifier. "
-        "SHAP/LIME explanation endpoints will be added in Module 5."
+        "Prediction API for the AI4I 2020 binary machine-failure classifier, "
+        "including local SHAP and LIME explanations."
     ),
 )
 
@@ -41,6 +43,15 @@ class PredictionRequest(BaseModel):
     model_name: str = Field(min_length=1, description="Name of a previously trained AI4I model")
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     machine: MachineFeatures
+
+
+class ExplanationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_name: str = Field(min_length=1, description="Name of a previously trained AI4I model")
+    machine: MachineFeatures
+    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    lime_num_samples: int = Field(default=1500, ge=500, le=5000)
 
 
 def read_catalog() -> dict[str, Any] | None:
@@ -81,6 +92,7 @@ def root():
         "health": "/health",
         "models": "/models",
         "prediction": "POST /predict",
+        "explanation": "POST /explain",
     }
 
 
@@ -206,3 +218,57 @@ def predict(request: PredictionRequest):
         "cross_validated_average_precision": ap,
         "note": "Prediction is a model estimate, not a guarantee of physical machine condition.",
     }
+
+
+@app.post("/explain", tags=["Explainability"])
+def explain(request: ExplanationRequest):
+    """Return local SHAP and LIME explanations for one machine prediction."""
+    catalog = read_catalog()
+    if catalog is None or not catalog.get("models"):
+        raise HTTPException(
+            status_code=409,
+            detail="No trained AI4I model is available. Train and publish models from Streamlit first.",
+        )
+
+    entries = {entry.get("name"): entry for entry in catalog["models"]}
+    if request.model_name not in entries:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{request.model_name}' is not registered. Call GET /models to list available models.",
+        )
+
+    features = catalog.get("features", [])
+    if set(features) != set(XAI_FEATURES) or len(features) != len(XAI_FEATURES):
+        raise HTTPException(status_code=500, detail="Model catalog feature schema does not match the six expected AI4I predictors.")
+
+    dataset_path = PROJECT_ROOT / "dataset" / "ai4i2020.csv"
+    if not dataset_path.is_file():
+        raise HTTPException(status_code=503, detail="The local AI4I dataset is required as an explanation background but was not found.")
+
+    try:
+        values = request.machine.model_dump(by_alias=True)
+        row = pd.DataFrame([{column: values[column] for column in features}], columns=features)
+        background_data = pd.read_csv(dataset_path)
+        missing = [feature for feature in features if feature not in background_data.columns]
+        if missing:
+            raise ValueError(f"Background dataset is missing required features: {missing}")
+        background = validate_features(
+            background_data.loc[:, features].sample(n=min(60, len(background_data)), random_state=42)
+        )
+        artifact_path = resolve_artifact(entries[request.model_name])
+        pipeline = load_pipeline(str(artifact_path), artifact_path.stat().st_mtime_ns)
+        explanation = explanation_payload(
+            pipeline, background, validate_features(row), lime_num_samples=request.lime_num_samples
+        )
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Explanation failed: {exc}") from exc
+
+    explanation["model_name"] = request.model_name
+    explanation["threshold"] = request.threshold
+    explanation["prediction"] = int(explanation["failure_probability"] >= request.threshold)
+    explanation["note"] = "This is a model explanation, not a causal explanation or a guarantee of machine condition."
+    return explanation

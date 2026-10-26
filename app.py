@@ -51,6 +51,7 @@ from sklearn.base import clone
 from imblearn.over_sampling import RandomOverSampler
 from imblearn.pipeline import Pipeline as ImbPipeline
 from xgboost import XGBClassifier
+from xai import compute_lime_explanation, compute_shap_explanations, validate_features
 
 try:
     from ucimlrepo import fetch_ucirepo
@@ -692,12 +693,13 @@ data_sig = dataframe_signature(raw_data)
 # ------------------------------
 # Main navigation
 # ------------------------------
-tab_data, tab_train, tab_eval, tab_api_predict, tab_about = st.tabs([
+tab_data, tab_train, tab_eval, tab_xai, tab_api_predict, tab_about = st.tabs([
     "1 · Data & EDA",
     "2 · Preparation & Training",
     "3 · Evaluation",
-    "4 · Machine Prediction (FastAPI)",
-    "5 · About",
+    "4 · Explainability (SHAP + LIME)",
+    "5 · Machine Prediction (FastAPI)",
+    "6 · About",
 ])
 
 with tab_data:
@@ -1236,6 +1238,91 @@ with tab_eval:
             "by optimizing metrics on the test set; choose it using validation data, then evaluate once on test data."
         )
 
+with tab_xai:
+    st.subheader("Model explainability with SHAP and LIME")
+    st.write(
+        "Inspect global feature contributions and explain one machine prediction. "
+        "Explanations use the fitted pipeline and the original six AI4I predictors."
+    )
+    trained_xai = st.session_state.get("trained_experiment")
+    if trained_xai is None:
+        st.info("Train at least one model in Preparation & Training before generating explanations.")
+    elif trained_xai.get("target") != "Machine failure" or set(trained_xai.get("features", [])) != set(AI4I_FEATURES):
+        st.warning("XAI is available for the AI4I task using the six approved predictors only.")
+    else:
+        xai_model_names = list(trained_xai["trained_models"].keys())
+        xai_model = st.selectbox(
+            "Model to explain", xai_model_names,
+            index=xai_model_names.index(trained_xai["best_model_name"]),
+            key="xai_model_selector",
+        )
+        xai_test = trained_xai["X_test"].copy()
+        xai_train = trained_xai["X_train"].copy()
+        if xai_test.empty or xai_train.empty:
+            st.warning("The current experiment does not contain enough train/test rows for XAI.")
+        else:
+            xai_controls = st.columns(3)
+            with xai_controls[0]:
+                background_count = st.slider("Background rows", 20, min(100, max(20, len(xai_train))), min(40, len(xai_train)), step=10, key="xai_background_count")
+            with xai_controls[1]:
+                global_count = st.slider("Global SHAP sample", 5, min(30, max(5, len(xai_test))), min(15, len(xai_test)), step=5, key="xai_global_count")
+            with xai_controls[2]:
+                local_position = st.number_input("Test row position to explain", min_value=0, max_value=len(xai_test)-1, value=0, step=1, key="xai_local_position")
+            local_row = validate_features(xai_test.iloc[[int(local_position)]])
+            st.dataframe(local_row, use_container_width=True, hide_index=True)
+            st.caption("SHAP/LIME are model explanations, not causal claims. Global explanations use a reproducible sample. In SHAP plots, Type is numerically encoded as L=0, M=1, H=2.")
+
+            if st.button("Generate SHAP and LIME explanations", type="primary", key="generate_xai_button"):
+                try:
+                    import matplotlib.pyplot as plt
+
+                    background = validate_features(xai_train.sample(n=min(int(background_count), len(xai_train)), random_state=42))
+                    global_rows = validate_features(xai_test.sample(n=min(int(global_count), len(xai_test)), random_state=42))
+                    pipeline = trained_xai["trained_models"][xai_model]
+                    with st.spinner("Computing SHAP global and local explanations and LIME local explanation..."):
+                        global_shap = compute_shap_explanations(pipeline, background, global_rows)
+                        local_shap = compute_shap_explanations(pipeline, background, local_row)
+                        lime_exp, local_probabilities = compute_lime_explanation(pipeline, background, local_row)
+
+                    st.markdown("#### Global feature importance — SHAP")
+                    shap_values = np.asarray(global_shap.values)
+                    if shap_values.ndim == 1:
+                        shap_values = shap_values.reshape(1, -1)
+                    importance = pd.DataFrame({
+                        "Feature": AI4I_FEATURES,
+                        "Mean absolute SHAP value": np.mean(np.abs(shap_values), axis=0),
+                    }).sort_values("Mean absolute SHAP value", ascending=True)
+                    importance_fig = px.bar(importance, x="Mean absolute SHAP value", y="Feature", orientation="h", title="Mean absolute SHAP contribution to failure probability")
+                    st.plotly_chart(importance_fig, use_container_width=True)
+                    st.markdown("#### SHAP summary plot")
+                    plt.figure()
+                    import shap
+                    shap.plots.beeswarm(global_shap, max_display=len(AI4I_FEATURES), show=False)
+                    st.pyplot(plt.gcf(), clear_figure=True)
+                    plt.close("all")
+
+                    st.markdown("#### Local explanation for selected test row")
+                    prediction_probability = float(pipeline.predict_proba(local_row)[0][list(pipeline.classes_).index(1)])
+                    k1, k2 = st.columns(2)
+                    k1.metric("Estimated failure probability", f"{prediction_probability:.2%}")
+                    k2.metric("Predicted class at threshold 0.50", "Failure (1)" if prediction_probability >= 0.5 else "No failure (0)")
+                    plt.figure()
+                    shap.plots.waterfall(local_shap[0], max_display=len(AI4I_FEATURES), show=False)
+                    st.pyplot(plt.gcf(), clear_figure=True)
+                    plt.close("all")
+
+                    lime_rows = pd.DataFrame(lime_exp.as_list(label=1), columns=["Feature condition", "LIME contribution"]).sort_values("LIME contribution")
+                    lime_fig = px.bar(lime_rows, x="LIME contribution", y="Feature condition", orientation="h", title="LIME local surrogate explanation (class 1)")
+                    st.plotly_chart(lime_fig, use_container_width=True)
+                    st.caption("Positive contributions support the explained class in the local surrogate; negative contributions oppose it. LIME weights are not probabilities or causal effects.")
+                    with st.expander("Numeric SHAP values for the selected row"):
+                        local_values = np.asarray(local_shap.values).reshape(-1)
+                        st.dataframe(pd.DataFrame({"Feature": AI4I_FEATURES, "Value": [str(local_row.iloc[0][f]) if f == "Type" else float(local_row.iloc[0][f]) for f in AI4I_FEATURES], "SHAP contribution": local_values}), use_container_width=True, hide_index=True)
+                except ImportError as exc:
+                    st.error(f"XAI dependency is missing: {exc}. Install requirements.txt and restart Streamlit.")
+                except Exception as exc:
+                    st.error(f"Could not generate explanations: {type(exc).__name__}: {exc}")
+
 with tab_api_predict:
     st.subheader("Machine prediction through FastAPI")
     st.write(
@@ -1363,6 +1450,8 @@ with tab_api_predict:
                     st.error(f"Prediction API returned HTTP {response.status_code}: {detail}")
                 else:
                     result = response.json()
+                    st.session_state["last_api_prediction_request"] = request_body
+                    st.session_state["last_api_prediction_result"] = result
                     metric1, metric2, metric3 = st.columns(3)
                     metric1.metric("Predicted class", str(result["prediction"]))
                     metric2.metric("Failure probability", f"{result['failure_probability']:.2%}")
@@ -1381,6 +1470,39 @@ with tab_api_predict:
                 st.error(f"Could not call the prediction API: {exc}")
 
 
+        last_request = st.session_state.get("last_api_prediction_request")
+        if last_request and st.button("Explain last prediction with SHAP + LIME", key="explain_last_api_prediction"):
+            try:
+                with st.spinner("Requesting local SHAP and LIME explanations from FastAPI..."):
+                    explain_response = requests.post(
+                        f"{api_url}/explain",
+                        json={
+                            "model_name": last_request["model_name"],
+                            "threshold": last_request["threshold"],
+                            "machine": last_request["machine"],
+                        },
+                        timeout=120,
+                    )
+                if not explain_response.ok:
+                    detail = explain_response.json().get("detail", explain_response.text)
+                    st.error(f"Explanation API returned HTTP {explain_response.status_code}: {detail}")
+                else:
+                    explain_result = explain_response.json()
+                    st.markdown("#### SHAP local contributions")
+                    shap_items = pd.DataFrame([
+                        {"Feature": feature, "SHAP contribution": values["shap_value"], "Input value": values["value"]}
+                        for feature, values in explain_result["features"].items()
+                    ]).sort_values("SHAP contribution")
+                    st.plotly_chart(px.bar(shap_items, x="SHAP contribution", y="Feature", orientation="h", title="SHAP contribution to failure probability"), use_container_width=True)
+                    st.markdown("#### LIME local explanation")
+                    lime_items = pd.DataFrame(explain_result["lime_explanation"])
+                    if not lime_items.empty:
+                        st.plotly_chart(px.bar(lime_items, x="contribution", y="feature_rule", orientation="h", title="LIME local surrogate contributions"), use_container_width=True)
+                    st.caption(explain_result.get("explanation_note", "Model explanations are not causal explanations."))
+            except requests.RequestException as exc:
+                st.error(f"Could not call the explanation API: {exc}")
+
+
 with tab_about:
     st.subheader("Project scope")
     st.markdown(
@@ -1395,7 +1517,7 @@ with tab_about:
         - Cross-validation, optional randomized hyperparameter search, and optional random oversampling inside training folds.
         - Test-set metric comparison, confusion matrix, ROC curves, precision–recall curves and a decision-threshold slider.
 
-        **Implemented in the API phase:** FastAPI health/model-list/prediction endpoints and a Streamlit prediction tab that calls FastAPI. **Deferred:** SHAP and LIME explanations (Module 5).
+        **Implemented:** FastAPI health/model-list/prediction endpoints, local SHAP and LIME explanations through the XAI tab, and a `POST /explain` endpoint for API-served local explanations.
 
         **Important limitations:** AI4I 2020 is synthetic data. Good test-set results on this dataset do not guarantee equivalent performance on real industrial equipment. The relative costs of missed failures and false alarms should guide model and threshold selection.
         """

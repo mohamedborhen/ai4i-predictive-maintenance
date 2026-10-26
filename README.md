@@ -2,7 +2,7 @@
 
 An interactive binary-classification project for predicting machine failure from operating conditions. It combines a Streamlit dashboard for data exploration, preprocessing, model training and evaluation with a FastAPI service for machine-level predictions.
 
-> **Scope note:** SHAP and LIME explanations (Module 5) are intentionally deferred. The app and API currently provide classification and probability estimates, not feature-attribution explanations. AI4I 2020 is a synthetic dataset, so results do not guarantee equivalent performance on real industrial equipment.
+> **Scope note:** Module 5 now includes global and local SHAP explanations, LIME local explanations, a Streamlit XAI tab, and a FastAPI `POST /explain` endpoint. AI4I 2020 is a synthetic dataset, so results do not guarantee equivalent performance on real industrial equipment.
 
 ## Contents
 
@@ -13,6 +13,7 @@ An interactive binary-classification project for predicting machine failure from
 - [Requirements](#requirements)
 - [Run the application on Windows](#run-the-application-on-windows)
 - [Train models and publish them to the API](#train-models-and-publish-them-to-the-api)
+- [Explain predictions with SHAP and LIME](#explain-predictions-with-shap-and-lime)
 - [FastAPI endpoints](#fastapi-endpoints)
 - [Limitations and responsible use](#limitations-and-responsible-use)
 
@@ -58,6 +59,7 @@ The training tab fixes the target and positive class for this project. When an A
 - Test-set comparison using accuracy, precision, recall, F1, ROC-AUC, Average Precision, trapezoidal PR-AUC and confusion-matrix counts.
 - Confusion matrix, ROC curves, precision-recall curves, classification report, threshold exploration and CSV/model downloads.
 - Machine Prediction tab that calls the FastAPI service.
+- Explainability tab with global SHAP feature importance/beeswarm plots and local SHAP waterfall plus LIME surrogate explanations for a selected held-out observation.
 
 ### FastAPI service
 
@@ -65,12 +67,14 @@ The training tab fixes the target and positive class for this project. When an A
 - Lists available models and identifies a default model.
 - Validates machine feature inputs and returns the predicted class and estimated failure probability at the selected threshold.
 - Provides interactive API documentation through Swagger UI.
+- `POST /explain` returns local SHAP contributions and LIME feature-condition weights for a machine input, using the local AI4I CSV as the explanation background.
 
 ## Project structure
 
 ```text
 predictive-maintenance/
-├── app.py                         # Streamlit UI, data, training, evaluation and API client
+├── app.py                         # Streamlit UI, data, training, evaluation, XAI and API client
+├── xai.py                         # Shared SHAP/LIME helpers for the app, API and notebook
 ├── requirements.txt               # Python dependencies
 ├── README.md
 ├── .gitignore
@@ -84,8 +88,10 @@ predictive-maintenance/
 │       ├── .gitkeep               # Keeps empty registry directory in Git
 │       ├── catalog.json           # Generated after successful AI4I training
 │       └── *.joblib               # Generated fitted pipelines
-└── notebooks/
-    └── ai4i_predictive_maintenance.ipynb  
+├── notebooks/
+│   └── ai4i_predictive_maintenance.ipynb  # Phases 1–6, including SHAP/LIME
+└── tests/
+    └── test_xai.py                # XAI schema and prediction consistency tests
 ```
 
 `catalog.json` and the `.joblib` files under `models/api_serving/` are generated artifacts. With the recommended `.gitignore`, they are not committed by default; after cloning the repository, run an AI4I training session in Streamlit to regenerate the local registry. If you choose to commit trained artifacts instead, first pin the compatible dependency versions and ensure the files meet GitHub's file-size limits.
@@ -97,7 +103,7 @@ predictive-maintenance/
 - Internet access for dependency installation and automatic UCI download.
 - Git for version control and publishing to GitHub.
 
-The current `requirements.txt` includes Streamlit, Pandas, NumPy, Plotly, scikit-learn, imbalanced-learn, XGBoost, `ucimlrepo`, joblib, Requests, FastAPI and Uvicorn.
+The current `requirements.txt` includes Streamlit, Pandas, NumPy, Plotly, scikit-learn, imbalanced-learn, XGBoost, `ucimlrepo`, joblib, Requests, FastAPI, Uvicorn, Matplotlib, SHAP and LIME.
 
 ## Run the application on Windows
 
@@ -180,6 +186,7 @@ Once Uvicorn is running:
 | `GET` | `/health` | API status and registry readiness |
 | `GET` | `/models` | List published models and default settings |
 | `POST` | `/predict` | Return prediction class and failure probability |
+| `POST` | `/explain` | Return local SHAP contributions and LIME feature-condition weights |
 | `GET` | `/docs` | Interactive Swagger API documentation |
 
 Swagger UI: <http://127.0.0.1:8000/docs>
@@ -202,11 +209,63 @@ Example `POST /predict` body (the `model_name` must match a value returned by `G
 ```
 
 
+### Explain a prediction through FastAPI
+
+Use `POST /explain` with the registered model name and the six original feature values. The endpoint returns the estimated failure probability, one SHAP contribution per original feature, and LIME's local feature-condition weights. It uses a reproducible sample of rows from `dataset/ai4i2020.csv` as the background distribution, so that file must be present on the API host.
+
+Example request:
+
+```json
+{
+  "model_name": "Decision Tree",
+  "threshold": 0.5,
+  "lime_num_samples": 1500,
+  "machine": {
+    "Type": "M",
+    "Air temperature [K]": 298.1,
+    "Process temperature [K]": 308.6,
+    "Rotational speed [rpm]": 1551,
+    "Torque [Nm]": 42.8,
+    "Tool wear [min]": 120
+  }
+}
+```
+
+The endpoint can be slow because model-agnostic SHAP and LIME require repeated model predictions. The response is a local explanation, not a causal account. Install the updated `requirements.txt` and restart FastAPI after updating the code.
+
+## Explain predictions with SHAP and LIME
+
+In Streamlit, train an AI4I model and open **Explainability (SHAP + LIME)**. Select a model, a training-background size, the number of held-out rows for global SHAP, and a held-out row for local explanation. The tab shows mean absolute SHAP importance, a SHAP beeswarm plot, a local SHAP waterfall plot, and LIME local feature-condition weights.
+
+The notebook's final Phase 6 cells provide the same analysis using the model selected by cross-validated Average Precision. The notebook cells are appended after the existing evaluation cells; previous cells are retained.
+
+`POST /explain` returns a JSON response with the estimated failure probability, one SHAP contribution per original feature, and LIME feature-condition weights. The endpoint samples the local `dataset/ai4i2020.csv` as its explanation background, so the dataset must be present on the API host. Model-agnostic SHAP and LIME require repeated model predictions and may take longer than `/predict`.
+
+Example request:
+
+```json
+{
+  "model_name": "Decision Tree",
+  "threshold": 0.5,
+  "lime_num_samples": 1500,
+  "machine": {
+    "Type": "M",
+    "Air temperature [K]": 298.1,
+    "Process temperature [K]": 308.6,
+    "Rotational speed [rpm]": 1551,
+    "Torque [Nm]": 42.8,
+    "Tool wear [min]": 120
+  }
+}
+```
+
+Positive SHAP contributions move the explained output toward a higher failure probability relative to the SHAP baseline; negative contributions move it lower. LIME weights describe a local surrogate and can differ from SHAP. Neither method establishes causation.
+
 ## Limitations and responsible use
 
 - The AI4I dataset is synthetic. Evaluation results on it should not be treated as proof of performance on real machines.
 - The dataset is highly imbalanced; review failure-class recall, precision, F1 and PR-AUC alongside accuracy.
 - The decision threshold affects missed failures and false alarms. Choose a deployment threshold using validation data and operational costs, not by repeatedly optimizing the test set.
 - Oversampling, when selected, is applied within the model-training pipeline rather than to the test set.
-- SHAP and LIME global/local explanations are not implemented yet and remain deferred to Module 5.
+- SHAP and LIME explain model behaviour, not causal relationships; explanations can vary with the background data and local surrogate sampling.
 - The FastAPI service is configured for local development. A public deployment needs a separately hosted API, HTTPS, authentication, and suitable operational controls. The default `127.0.0.1` API URL refers to the same computer and will not reach a remote API from a cloud-hosted Streamlit app.
