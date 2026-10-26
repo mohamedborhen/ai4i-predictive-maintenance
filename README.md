@@ -2,8 +2,6 @@
 
 An interactive binary-classification project for predicting machine failure from operating conditions. It combines a Streamlit dashboard for data exploration, preprocessing, model training and evaluation with a FastAPI service for machine-level predictions.
 
-> **Scope note:** Module 5 now includes global and local SHAP explanations, LIME local explanations, a Streamlit XAI tab, and a FastAPI `POST /explain` endpoint. AI4I 2020 is a synthetic dataset, so results do not guarantee equivalent performance on real industrial equipment.
-
 ## Contents
 
 - [Problem and dataset](#problem-and-dataset)
